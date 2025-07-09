@@ -1,0 +1,347 @@
+import bpy
+import bmesh
+from mathutils import Vector
+from bpy.props import IntProperty, FloatProperty
+from bpy.types import Operator, Panel
+
+bl_info = {
+    "name": "アルミパイプ棚ジェネレーター",
+    "author": "AI Assistant",
+    "version": (1, 0),
+    "blender": (2, 80, 0),
+    "location": "3D Viewport > Sidebar > AlumPipe",
+    "description": "アルミパイプで作られた棚を自動生成",
+    "category": "Add Mesh",
+}
+
+class MESH_OT_aluminum_pipe_shelf(Operator):
+    """アルミパイプ棚を生成"""
+    bl_idname = "mesh.aluminum_pipe_shelf"
+    bl_label = "アルミパイプ棚を生成"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    # プロパティ定義
+    width: FloatProperty(
+        name="幅",
+        description="棚の幅",
+        default=1.0,
+        min=0.1,
+        max=5.0,
+        unit='LENGTH'
+    )
+    
+    depth: FloatProperty(
+        name="奥行き",
+        description="棚の奥行き",
+        default=0.5,
+        min=0.1,
+        max=3.0,
+        unit='LENGTH'
+    )
+    
+    height: FloatProperty(
+        name="高さ",
+        description="棚の高さ",
+        default=1.5,
+        min=0.2,
+        max=3.0,
+        unit='LENGTH'
+    )
+    
+    shelves: IntProperty(
+        name="段数",
+        description="棚の段数",
+        default=3,
+        min=1,
+        max=10
+    )
+    
+    pipe_radius: FloatProperty(
+        name="パイプ半径",
+        description="アルミパイプの半径",
+        default=0.01,
+        min=0.005,
+        max=0.05,
+        unit='LENGTH'
+    )
+    
+    shelf_thickness: FloatProperty(
+        name="棚板厚み",
+        description="棚板の厚み",
+        default=0.02,
+        min=0.01,
+        max=0.1,
+        unit='LENGTH'
+    )
+
+    def execute(self, context):
+        # 既存の同名オブジェクトを削除
+        self.cleanup_existing_objects()
+        
+        self.create_aluminum_pipe_shelf(context)
+        return {'FINISHED'}
+
+    def cleanup_existing_objects(self):
+        """既存の棚オブジェクトを削除"""
+        # 削除対象のオブジェクト名パターン
+        patterns = ["縦パイプ_", "横パイプ_", "棚板_", "アルミパイプ棚"]
+        
+        objects_to_delete = []
+        for obj in bpy.data.objects:
+            for pattern in patterns:
+                if pattern in obj.name:
+                    objects_to_delete.append(obj)
+                    break
+        
+        # オブジェクトを削除
+        for obj in objects_to_delete:
+            bpy.data.objects.remove(obj, do_unlink=True)
+        
+        # 空のコレクションを削除
+        collections_to_delete = []
+        for col in bpy.data.collections:
+            if "アルミパイプ棚" in col.name and len(col.objects) == 0:
+                collections_to_delete.append(col)
+        
+        for col in collections_to_delete:
+            bpy.data.collections.remove(col)
+
+    def create_aluminum_pipe_shelf(self, context):
+        # 既存の選択をクリア
+        bpy.ops.object.select_all(action='DESELECT')
+        
+        # 新しいコレクションを作成
+        collection_name = "アルミパイプ棚"
+        if collection_name in bpy.data.collections:
+            collection = bpy.data.collections[collection_name]
+        else:
+            collection = bpy.data.collections.new(collection_name)
+            bpy.context.scene.collection.children.link(collection)
+        
+        # フレーム（縦パイプ）を作成
+        self.create_vertical_pipes(collection)
+        
+        # 横パイプを作成
+        self.create_horizontal_pipes(collection)
+        
+        # 棚板を作成
+        self.create_shelves(collection)
+        
+        # 材質を設定
+        self.create_materials()
+        self.apply_materials()
+        
+        self.report({'INFO'}, f"アルミパイプ棚を生成しました（{self.shelves}段）")
+
+    def create_vertical_pipes(self, collection):
+        """縦パイプを作成"""
+        # 4本の縦パイプの位置
+        positions = [
+            (0, 0, 0),
+            (self.width, 0, 0),
+            (0, self.depth, 0),
+            (self.width, self.depth, 0)
+        ]
+        
+        for i, pos in enumerate(positions):
+            # シリンダーを作成
+            bpy.ops.mesh.primitive_cylinder_add(
+                radius=self.pipe_radius,
+                depth=self.height,
+                location=(pos[0], pos[1], self.height/2)
+            )
+            
+            pipe = bpy.context.active_object
+            pipe.name = f"縦パイプ_{i+1}"
+            
+            # コレクションに移動
+            if pipe.name not in collection.objects:
+                collection.objects.link(pipe)
+            if pipe.name in bpy.context.scene.collection.objects:
+                bpy.context.scene.collection.objects.unlink(pipe)
+
+    def create_horizontal_pipes(self, collection):
+        """横パイプを作成"""
+        # 棚板の位置を計算（底面と各段の上面）
+        shelf_positions = []
+        shelf_spacing = self.height / self.shelves
+        
+        # 底面（0）と各段の上面
+        for level in range(self.shelves + 1):
+            z = level * shelf_spacing
+            shelf_positions.append(z)
+        
+        for level, z in enumerate(shelf_positions):
+            # 前後の横パイプ（幅方向）
+            for j, y in enumerate([0, self.depth]):
+                bpy.ops.mesh.primitive_cylinder_add(
+                    radius=self.pipe_radius,
+                    depth=self.width,
+                    location=(self.width/2, y, z)
+                )
+                pipe = bpy.context.active_object
+                pipe.name = f"横パイプ_幅_{level}_{j}"
+                pipe.rotation_euler = (0, 1.5708, 0)  # Y軸周りに90度回転
+                
+                if pipe.name not in collection.objects:
+                    collection.objects.link(pipe)
+                if pipe.name in bpy.context.scene.collection.objects:
+                    bpy.context.scene.collection.objects.unlink(pipe)
+            
+            # 左右の横パイプ（奥行き方向）
+            for j, x in enumerate([0, self.width]):
+                bpy.ops.mesh.primitive_cylinder_add(
+                    radius=self.pipe_radius,
+                    depth=self.depth,
+                    location=(x, self.depth/2, z)
+                )
+                pipe = bpy.context.active_object
+                pipe.name = f"横パイプ_奥行き_{level}_{j}"
+                pipe.rotation_euler = (1.5708, 0, 0)  # X軸周りに90度回転
+                
+                if pipe.name not in collection.objects:
+                    collection.objects.link(pipe)
+                if pipe.name in bpy.context.scene.collection.objects:
+                    bpy.context.scene.collection.objects.unlink(pipe)
+
+    def create_shelves(self, collection):
+        """棚板を作成"""
+        shelf_spacing = self.height / self.shelves
+        
+        for level in range(self.shelves):
+            # 各段の高さ（底面から各段の上面まで）
+            z = (level + 1) * shelf_spacing - self.shelf_thickness/2
+            
+            # 棚板を作成
+            bpy.ops.mesh.primitive_cube_add(
+                size=1,
+                location=(self.width/2, self.depth/2, z)
+            )
+            
+            shelf = bpy.context.active_object
+            shelf.name = f"棚板_{level+1}"
+            shelf.scale = (self.width, self.depth, self.shelf_thickness)
+            
+            # スケールを適用
+            bpy.context.view_layer.objects.active = shelf
+            bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
+            
+            if shelf.name not in collection.objects:
+                collection.objects.link(shelf)
+            if shelf.name in bpy.context.scene.collection.objects:
+                bpy.context.scene.collection.objects.unlink(shelf)
+
+    def create_materials(self):
+        """材質を作成"""
+        # アルミパイプ材質
+        aluminum_mat_name = "アルミパイプ材質"
+        if aluminum_mat_name not in bpy.data.materials:
+            aluminum_mat = bpy.data.materials.new(name=aluminum_mat_name)
+            aluminum_mat.use_nodes = True
+            
+            # ノードを設定
+            nodes = aluminum_mat.node_tree.nodes
+            nodes.clear()
+            
+            # プリンシプルBSDFノード
+            bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+            bsdf.inputs['Base Color'].default_value = (0.8, 0.8, 0.8, 1.0)
+            bsdf.inputs['Metallic'].default_value = 1.0
+            bsdf.inputs['Roughness'].default_value = 0.2
+            
+            # 出力ノード
+            output = nodes.new(type='ShaderNodeOutputMaterial')
+            aluminum_mat.node_tree.links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+        
+        # 棚板材質
+        shelf_mat_name = "棚板材質"
+        if shelf_mat_name not in bpy.data.materials:
+            shelf_mat = bpy.data.materials.new(name=shelf_mat_name)
+            shelf_mat.use_nodes = True
+            
+            nodes = shelf_mat.node_tree.nodes
+            nodes.clear()
+            
+            bsdf = nodes.new(type='ShaderNodeBsdfPrincipled')
+            bsdf.inputs['Base Color'].default_value = (0.9, 0.9, 0.8, 1.0)
+            bsdf.inputs['Roughness'].default_value = 0.6
+            
+            output = nodes.new(type='ShaderNodeOutputMaterial')
+            shelf_mat.node_tree.links.new(bsdf.outputs['BSDF'], output.inputs['Surface'])
+
+    def apply_materials(self):
+        """材質を適用"""
+        aluminum_mat = bpy.data.materials.get("アルミパイプ材質")
+        shelf_mat = bpy.data.materials.get("棚板材質")
+        
+        if not aluminum_mat or not shelf_mat:
+            return
+        
+        for obj in bpy.context.scene.objects:
+            if obj.name.startswith("縦パイプ") or obj.name.startswith("横パイプ"):
+                # 既存の材質をクリア
+                obj.data.materials.clear()
+                obj.data.materials.append(aluminum_mat)
+            elif obj.name.startswith("棚板"):
+                # 既存の材質をクリア
+                obj.data.materials.clear()
+                obj.data.materials.append(shelf_mat)
+
+class MESH_PT_aluminum_pipe_shelf_panel(Panel):
+    """アルミパイプ棚パネル"""
+    bl_label = "アルミパイプ棚ジェネレーター"
+    bl_idname = "MESH_PT_aluminum_pipe_shelf"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'AlumPipe'
+
+    def draw(self, context):
+        layout = self.layout
+        
+        # 操作ボタン
+        op = layout.operator("mesh.aluminum_pipe_shelf", text="棚を生成", icon='MESH_CUBE')
+        
+        # パラメータ表示
+        layout.separator()
+        layout.label(text="パラメータ設定:")
+        
+        # 寸法設定
+        box = layout.box()
+        box.label(text="寸法設定")
+        row = box.row()
+        row.prop(op, "width")
+        row = box.row()
+        row.prop(op, "depth")
+        row = box.row()
+        row.prop(op, "height")
+        
+        # 段数設定
+        box = layout.box()
+        box.label(text="段数設定")
+        row = box.row()
+        row.prop(op, "shelves")
+        
+        # 詳細設定
+        box = layout.box()
+        box.label(text="詳細設定")
+        row = box.row()
+        row.prop(op, "pipe_radius")
+        row = box.row()
+        row.prop(op, "shelf_thickness")
+
+# クラス登録
+classes = [
+    MESH_OT_aluminum_pipe_shelf,
+    MESH_PT_aluminum_pipe_shelf_panel,
+]
+
+def register():
+    for cls in classes:
+        bpy.utils.register_class(cls)
+
+def unregister():
+    for cls in classes:
+        bpy.utils.unregister_class(cls)
+
+if __name__ == "__main__":
+    register()
